@@ -2233,6 +2233,9 @@ UNITS = [
     ("timestamp",
      ["-timestamp start='2013-12-26 17:31:05' size=7 prec=10",
       "-timestamp end='2013-12-26 17:32:01' prec=3600 size=3" ]),
+    ("datetime",
+     ["-timestamp start='2013-12-26 17:31:05' size=7 prec=10",
+      "-timestamp end='2013-12-26 17:32:01' prec=3600 size=3" ]),
     ("interval",
      ["-interval", "-interval unit=d size=365", "-interval unit=y size=42"]),
     ("inet",
@@ -2387,8 +2390,8 @@ RE_CMD=r'CREATE|ALTER|DROP|SELECT|INSERT|UPDATE|DELETE|SET|GRANT|REVOKE|SHOW'
 # types
 RE_SER=r'(SMALL|BIG)?SERIAL|SERIAL[248]'
 RE_BLO=r'BYTEA|BLOB'
-RE_INT=r'{0}|(TINY|SMALL|MEDIUM)INT|INT[248]|INTEGER|INT\b'.format(RE_SER)
-RE_FLT=r'REAL|FLOAT|DOUBLE\s+PRECISION|NUMERIC|DECIMAL'
+RE_INT=r'{0}|(BIG|TINY|SMALL|MEDIUM)INT|INT[248]|INTEGER|INT\b'.format(RE_SER)
+RE_FLT=r'REAL|FLOAT|DOUBLE|REAL|DOUBLE\s+PRECISION|NUMERIC|DECIMAL'
 RE_TXT=r'TEXT|CHAR\(\d+\)|VARCHAR\(\d+\)'
 RE_BIT=r'BIT\(\d+\)|VARBIT\(\d+\)'
 RE_TSTZ=r'TIMESTAMP(\s+WITH\s+TIME\s+ZONE)?'
@@ -3984,7 +3987,7 @@ def UUIDGenerator(att, params=None):
 
 # all user-visible generators
 GENERATORS = {
-    'cat':CatGenerator, 'alt':AltGenerator, 'timestamp':TimestampGenerator,
+    'cat':CatGenerator, 'alt':AltGenerator, 'datetime':TimestampGenerator, 'timestamp':TimestampGenerator,
     'repeat':RepeatGenerator, 'float':FloatGenerator, 'date':DateGenerator,
     'pattern':PatternGenerator, 'int':IntGenerator, 'bool':BoolGenerator,
     'interval':IntervalGenerator, 'const':ConstGenerator, 'word':WordGenerator,
@@ -4153,6 +4156,7 @@ def findGeneratorType(type):
         'string'    if db.textType(type)      else \
         'bool'      if db.boolType(type)      else \
         'date'      if db.dateType(type)      else \
+        'datetime'  if db.timestampType(type) else \
         'timestamp' if db.timestampType(type) else \
         'interval'  if db.intervalType(type)  else \
         'float'     if db.floatType(type)     else \
