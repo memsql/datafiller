@@ -131,6 +131,7 @@ if sys.version_info < (3,):
     u = lambda s: unicode(s, opts.encoding) # for outside strings
     u8 = lambda s: unicode(s, 'utf-8') # for strings in this file
     bytes = bytearray # ah!
+    defaultstr = str
     str = unicode # ah! should it be u? u8? depends?
     # see also print_function import above
     # see also print overriding below
@@ -4563,6 +4564,8 @@ class PostgreSQL(Database):
 
 class MySQL(Database):
     """MySQL database (experimental)."""
+    def echo(self, s):
+        return ''
     def begin(self):
         return 'START TRANSACTION;'
     def commit(self):
@@ -4573,7 +4576,9 @@ class MySQL(Database):
     def insertValue(self, table, value, isLast):
         qv = []
         for v in value:
-            qv.append(self.boolValue(v) if type(v) is bool else
+            qv.append(self.null() if v is None else
+                      self.boolValue(v) if type(v) is bool else
+                      self.quoteLiteral(v) if type(v) is defaultstr else
                       self.quoteLiteral(v) if type(v) is str else str(v))
         s = '  (' + ','.join(str(v) for v in qv) + ')'
         if not isLast:
@@ -4583,9 +4588,12 @@ class MySQL(Database):
         return ';'
     def null(self):
         return 'NULL'
+    def serialType(self, type):
+        return is_ser.match(type)
     def intType(self, type):
         t = type.lower()
-        return Database.intType(self, t) or t == 'tinyint' or t == 'mediumint'
+        return Database.intType(self, t) or \
+            self.serialType(type) or is_int.match(t)
 
 # class SQLite(Database):
 
