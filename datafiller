@@ -1,11 +1,20 @@
 #! /usr/bin/env python
 # -*- coding: utf-8 -*-
 #
-# $Id: datafiller.py 792 2014-03-23 09:23:40Z fabien $
+# $Id: datafiller.py 832 2015-11-01 21:55:41Z fabien $
 #
 # TODO:
 #
+# - generate csv into separate files?
+# - generate packed binary data?
+# - could the generation be parallel somehow?
+# - allow to cast/round generated values for float?
+# - using .format was probably an error, '%' is more concise and readable
+# - allow expressions from another attribute?
 # - other types: geometry? json/xml? others? extensibility?
+#   for geometry, just advertise the fact that text representation
+#   can be generated, with some example about how to manage distributions.
+# - non random generation? eg loop...
 # - disable/enable constraints? within a transaction?
 #   not possible with PostgreSQL, must DROP/CREATE? defer?
 # - improve "parsing" regexpr...
@@ -28,6 +37,8 @@
 # - the value/macro constraint is somehow awkward at times, requiring
 #   cascading macros. not sure how it could be simplified.
 # - embed latin1 test? depends on locally available locales?
+# - how to generate a text array with a bunch of distinct text from a list,
+#   with some probabilities? (eg tags).
 #
 # NOT TO DO:
 # - pg_dump -s ... | datafiller.py ... ## nope, how to set directives?!
@@ -37,8 +48,8 @@
 # see other python2/3 compatibility hacks below...
 from __future__ import print_function
 
-VERSION = '2.0.0'
-Id='$Id: datafiller.py 792 2014-03-23 09:23:40Z fabien $'
+VERSION = '2.0.1-dev'
+Id='$Id: datafiller.py 832 2015-11-01 21:55:41Z fabien $'
 
 # extract revision informations from svn revision identifier
 import re
@@ -63,7 +74,7 @@ version = "{0} (r{1} on {2})".format(VERSION, revision, revdate)
 # - another funny one: int.bit_length requires 2.7 or 3.1, but not in 3.0...
 #   maybe it is because 3.0 was released one year before 2.7
 # - module ipaddress: available from 3.3-
-# - 1/2 == 0 (v2) vs 0.5 (v3)
+# - 1/2 == 0 (v2) vs 0.5 (v3), int casts become necessary
 # - in 3.0: the 'long' type has been renamed to 'int', and the 'int' type,
 #   which was really a 'C long', has been dropped from user space (PEP237).
 #   the '123L' syntax is now invalid.
@@ -85,6 +96,31 @@ version = "{0} (r{1} on {2})".format(VERSION, revision, revdate)
 # - performance regressions 'internal' on a desktop: python3 is a joke...
 #   2.6: 12.94, 2.7: 11.56, 3.2: 14.68, 3.3: 15.47, 3.4b1: 15.93
 # - reduce as been moved in python3
+# - PEP 3099 is a summary of bad decisions, or bad arguments for possibly
+#   good decisions. an exemple of this is to stick to a LL(1) parser.
+#   For the user of a language, this is a non argument, if a LL(2) would
+#   allow better (more readable, simpler, ...) syntax.
+# - there is a frozenset but no frozenlist.
+# - print_function in python2 does not support flush
+# - some dict methods have disappeared, i.e. itervalues()
+#   2/3: viewvalues() -> values(), values -> list(values())
+
+# some Python pitfalls/horrors:
+# - white spaces are significant...
+# - some internal types support .clone(), others not, for no clear reason.
+# - modifying methods on mutable types do not return "self", so they cannot
+#   be combined.
+# - @-annotations are semantically significants, it should be in the syntax
+# - Python "threads" are a bad useless joke, do not do parallelism with Python
+# - integers are mp, that is good until you really need intNN_t for some stuff
+# - bad unreadable syntax is called "pythonic", eg:
+#   . no do/while
+#   . no combined assign/test, use while True + break, assign + if...
+#   . exception are used too often where it should not be needed
+# - no user-documentation support (as perlpod), just a dev-doc support
+# - several dev-doc styles...
+# - str/repr recursive consistency is unclear.
+#
 
 import sys
 if sys.version_info < (3,):
@@ -172,6 +208,12 @@ execution to the database command.
 
 Default is to only ouput generated data.
 
+=item C<--freeze>, reverse with C<--no-freeze>
+
+Whether to use PostgreSQL C<COPY> C<FREEZE> option.
+
+Default is to use it, as it allows better performance.
+
 =item C<--help> or C<-h>
 
 Show basic help.
@@ -222,9 +264,11 @@ on a table to compute the actual number of tuples to generate in each table.
 Default is 100, which can be overriden with the B<size> directive at the
 schema level.
 
-=item C<--target (postgresql|mysql)> or C<-t ...>
+=item C<--target (postgresql|mysql|csv)> or C<-t ...>
 
-Target database engine. MySQL support is really experimental.
+Target database engine.
+MySQL support is really experimental.
+CSV support is partial.
 
 Default is to target PostgreSQL.
 
@@ -1201,7 +1245,7 @@ will help generate negative values, and the I<regress> skewed generator
 will make small values more likely.
 
 If this is put in a C<tpc-b.sql> file, then working test data can be
-generated with:
+generated and loaded with:
 
   sh> {name} -f -T --size=10 tpc-b.sql | psql bench
 
@@ -1229,6 +1273,7 @@ There is no SQL parser, table and attributes are analysed with
 optimistic regular expressions.
 
 Foreign keys cannot reference compound keys.
+That is a good thing, because you should not have compound foreign keys.
 
 Handling of quoted identifiers is partial and may not work at all.
 
@@ -1285,6 +1330,16 @@ History of versions:
 =over 4
 
 =item B<version {version}>
+
+In development.
+
+Make C<--drop> option to cascade with PostgreSQL.
+Add C<--freeze> and C<--no-freeze> options to trigger PostgreSQL COPY FREEZE option.
+Add license information in generated output.
+Add some support to generate CSV.
+Improved documentation and comments.
+
+=item B<version 2.0.0 (r792 on 2014-03-23)>
 
 =over 4
 
@@ -2919,7 +2974,7 @@ class IntervalGenerator(IntGenerator):
         return db.intervalValue(super(IntervalGenerator, self).genData(),
                                 self.unit)
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 class DateGenerator(IntGenerator):
     """Generate dates between 'start' and 'end' at precision 'prec'.
@@ -3522,7 +3577,7 @@ class TupleGenerator(ListGenerator):
         return tuple(super(TupleGenerator, self).genData())
 
 class ReduceGenerator(ListGenerator):
-    """Reduce a list of generators"""
+    """Reduce a list of float generators"""
     DIRS= { 'reduce':str, 'op':str }
     OPS = { '+':(lambda a, b: float(a) + float(b)),
             '*':(lambda a, b: float(a) * float(b)),
@@ -4260,8 +4315,8 @@ class Table(Model):
                 # update l, but reuse l0 if serial/pk, otherwise it cycles!
                 i = 0
                 l = []
-                # reseed again! otherwise the new value would be generated
-                # unother option would be to keep tle previous value when
+                # reseed again! otherwise the new value would be generated.
+                # another option would be to keep the previous value when
                 # the generator is synchronized.
                 tuple_count += 1
                 self.mapGen(lambda s: s.shareSeed())
@@ -4283,6 +4338,8 @@ class Table(Model):
 
 class Database(object):
     """Abstract a database target."""
+    def comment(self, s):
+        print('-- ' + s)
     def echo(self, s):
         raise Exception('not implemented in abstract class')
     # transactions
@@ -4363,6 +4420,53 @@ class Database(object):
         return s
     analyse = None
 
+class CSV(Database):
+    """CSV output."""
+    def comment(self, s):
+        pass
+    def _comment(self, s):
+        return "# " + s
+    def echo(self, s):
+        return self._comment(s)
+    # transactions
+    def begin(self):
+        return None
+    def commit(self):
+        return None
+    # operations
+    def insertBegin(self, table):
+        return self._comment("%s: %s" % \
+            (table.getName(), ','.join(a.getName() \
+                for a in filter(lambda x: x.gen, table.att_list))))
+    def insertValue(self, table, value, isLast):
+        return ','.join(db.quoteLiteral(i) for i in value)
+    def insertEnd(self):
+        return ''
+    def setSequence(self, tab, att, number):
+        return ''
+    def dropTable(self, table):
+        return ''
+    def truncateTable(self, table):
+        return ''
+    # quoting
+    def quoteIdent(self, ident):
+        return '"%s"' % ident
+    def quoteLiteral(self, literal):
+        if isinstance(literal, (int, float)):
+            return str(literal)
+        else:
+            return '"%s"' % literal
+    # type
+    def serialType(self, type):
+        return is_ser.match(type)
+    def intType(self, type):
+        t = type.lower()
+        return Database.intType(self, t) or \
+            self.serialType(type) or is_int.match(t)
+    # values
+    def null(self):
+        return 'NULL'
+
 class PostgreSQL(Database):
     """PostgreSQL database."""
     def echo(self, s):
@@ -4372,11 +4476,19 @@ class PostgreSQL(Database):
     def commit(self):
         return 'COMMIT;'
     def insertBegin(self, table):
+        # build COPY options
+        copyopts = []
+        if opts.encoding:
+            copyopts.append("ENCODING '{0}'".format(opts.encoding))
+        if opts.freeze:
+            copyopts.append("FREEZE ON")
+        scopyopts = (" (" + ", ".join(copyopts) + ")") if len(copyopts) else ''
+        # build copy statement
         return "COPY {0} ({1}) FROM STDIN{2};".format(
             table.getName(),
             ','.join(a.getName() \
                      for a in filter(lambda x: x.gen, table.att_list)),
-            " (ENCODING '{0}')".format(opts.encoding) if opts.encoding else '')
+            scopyopts)
     def quoteEsc(self, s, q, esc, n):
         if s == None:
             return n
@@ -4418,7 +4530,7 @@ class PostgreSQL(Database):
             name = db.quoteIdent(name)
         return "ALTER SEQUENCE {0} RESTART WITH {1};".format(name, number)
     def dropTable(self, table):
-        return "DROP TABLE IF EXISTS {0};".format(table.getName())
+        return "DROP TABLE IF EXISTS {0} CASCADE;".format(table.getName())
     def truncateTable(self, table):
         return "TRUNCATE TABLE {0} CASCADE;".format(table.getName())
     def quoteIdent(self, ident):
@@ -4433,7 +4545,7 @@ class PostgreSQL(Database):
         return Database.intType(self, t) or \
             self.serialType(type) or is_int.match(t)
     def eanType(self, type):
-        """retun the expected size."""
+        # return the expected byte size
         t = type.upper()
         return 0 if not re.match('(' + RE_EAN + ')', t) else \
             12 if t == 'UPC' else \
@@ -4472,7 +4584,6 @@ class MySQL(Database):
         return Database.intType(self, t) or t == 'tinyint' or t == 'mediumint'
 
 # class SQLite(Database):
-# class CSV(Database):
 
 def debug(level, message):
     """Print a debug message, maybe."""
@@ -4496,8 +4607,12 @@ opts.add_argument('-e', '--encoding', type=str, default=None,
                   help='set input & output encoding')
 opts.add_argument('-f', '--filter', action='store_true', default=False,
                   help='also include input in output')
-opts.add_argument('--no-filter', action='store_true', default=None,
+opts.add_argument('--no-filter', action='store_true', default=False,
                   help='do turn off filtering, whatever!')
+opts.add_argument('--freeze', action='store_true', default=True,
+                  help='use PostgreSQL COPY FREEZE')
+opts.add_argument('--no-freeze', dest='freeze', action='store_false',
+                  help='do not use PostgreSQL COPY FREEZE')
 opts.add_argument('-T', '--transaction', action='store_true',
                   help='wrap output in a transaction')
 opts.add_argument('-S', '--seed', default=None,
@@ -4545,16 +4660,18 @@ if opts.V:
     print(VERSION)
     sys.exit(0)
 
-# set database
+# set database target
 db = None
 if opts.target == 'postgresql':
     db = PostgreSQL()
 elif opts.target == 'mysql':
     db = MySQL()
+elif opts.target == 'csv':
+    db = CSV()
 else:
     raise Exception("unexpected target database {0}".format(opts.target))
 
-# fix some options
+# fix some options for consistency
 if opts.validate:
     opts.transaction = True
     opts.filter = True
@@ -4564,6 +4681,7 @@ if opts.self_test_hack:
     if opts.seed:
         random.seed(opts.seed)
     opts.quiet = True
+    opts.freeze = False
     # consistent \n and unicode, see print overriding below
     assert not opts.encoding, "no --encoding under self-test"
     opts.encoding = 'utf-8'
@@ -4996,12 +5114,20 @@ random.seed(opts.seed)
 #
 # START OUTPUT
 #
-if not opts.self_test_hack:
+if not opts.self_test_hack and opts.target != 'csv':
     print('')
-    print("-- data generated by {0} version {1} for {2}".
-          format(sys.argv[0], version, opts.target))
+    print("-- This file is generated by the DataFiller free software.")
+    print("-- This software comes without any warranty whatsoever.")
+    print("-- Use at your own risk. Beware, this script may destroy your data!")
+    print("-- License is GPLv3, see http://www.gnu.org/copyleft/gpl.html")
+    print("-- Get latest version from http://www.coelho.net/datafiller.html")
+    print('')
+    print("-- Data generated by: {0}".format(sys.argv[0]))
+    print("-- Version {0}".format(version))
+    print("-- For {0} on {1} (UTC)".
+          format(opts.target, datetime.utcnow().isoformat()))
 
-if opts.test and opts.filter:
+if opts.test and opts.filter and opts.target == 'postgresql':
     print('')
     print("\\set ON_ERROR_STOP")
 
@@ -5126,16 +5252,16 @@ if opts.debug:
 # CALL GENERATORS on each table
 #
 for t in tables:
-    print('')
+    db.comment('')
     if 'nogen' in t.params or t.size == 0:
         t.params.pop('nogen', None)
         assert not t.params, \
             "unused {0} parameters: {1}".format(t.name, t.params)
-        print("-- skip table {0}".format(t.name))
+        db.comment("skip table {0}".format(t.name))
     else:
         size = "{0:d}*{1:g}".format(t.size, 1.0-t.skip) if t.skip else \
                str(t.size)
-        print("-- fill table {0} ({1})".format(t.name, size))
+        db.comment("fill table {0} ({1})".format(t.name, size))
         if not opts.quiet:
             print(db.echo("# filling table {0} ({1})".format(t.name, size)))
         print(db.insertBegin(t))
@@ -5154,8 +5280,8 @@ cleanup_some_tmp_files()
 #
 # RESTART SEQUENCES
 #
-print('')
-print('-- restart sequences')
+db.comment('')
+db.comment('restart sequences')
 for t in filter(lambda t: not 'nogen' in t.params, tables):
     for a in filter(lambda a: a.isSerial() and a.gen, t.att_list):
         print(db.setSequence(t, a, a.gen.offset + a.gen.size))
@@ -5165,7 +5291,7 @@ for t in filter(lambda t: not 'nogen' in t.params, tables):
 #
 
 if opts.transaction:
-    print('')
+    db.comment('')
     print(db.commit())
 
 #
@@ -5173,8 +5299,8 @@ if opts.transaction:
 #
 
 if db.analyse:
-    print('')
-    print('-- analyze modified tables')
+    db.comment('')
+    db.comment('analyze modified tables')
     for t in filter(lambda t: not 'nogen' in t.params, tables):
         print(db.analyse(t.getName()))
 
