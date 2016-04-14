@@ -4473,7 +4473,7 @@ class CSV(Database):
             self.serialType(type) or is_int(t)
     # values
     def null(self):
-        return 'NULL'
+        return opts.null_encoding
 
 class PostgreSQL(Database):
     """PostgreSQL database."""
@@ -4647,6 +4647,8 @@ opts.add_argument('-m', '--man', action='store_const', const=2,
                   help='show man page')
 opts.add_argument('-n', '--null', type=float, default=None,
                   help='probability of generating a NULL value')
+opts.add_argument('-N', '--null-encoding', type=str, default='NULL',
+                  help='Encoding of NULL fields for the CSV output format.')
 opts.add_argument('--pod', type=str, default='pod2usage -verbose 3',
                   help='override pod2usage command')
 opts.add_argument('-q', '--quiet', action='store_true', default=False,
