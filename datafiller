@@ -1,7 +1,7 @@
 #! /usr/bin/env python
 # -*- coding: utf-8 -*-
 #
-# $Id: datafiller.py 832 2015-11-01 21:55:41Z fabien $
+# $Id: datafiller.py 839 2016-04-14 10:41:38Z fabien $
 #
 # TODO:
 #
@@ -49,7 +49,7 @@
 from __future__ import print_function
 
 VERSION = '2.0.1-dev'
-Id='$Id: datafiller.py 832 2015-11-01 21:55:41Z fabien $'
+Id='$Id: datafiller.py 839 2016-04-14 10:41:38Z fabien $'
 
 # extract revision informations from svn revision identifier
 import re
@@ -131,7 +131,7 @@ if sys.version_info < (3,):
     u = lambda s: unicode(s, opts.encoding) # for outside strings
     u8 = lambda s: unicode(s, 'utf-8') # for strings in this file
     bytes = bytearray # ah!
-    defaultstr = str
+    defstr = str
     str = unicode # ah! should it be u? u8? depends?
     # see also print_function import above
     # see also print overriding below
@@ -144,6 +144,7 @@ else:
     unichr = chr # ah!
     long = int # ah!
     from functools import reduce
+    defstr = str
     # see print overriding below
 
 # plain old embedded documentation... Yes, the perl thing;-)
@@ -1338,6 +1339,7 @@ Make C<--drop> option to cascade with PostgreSQL.
 Add C<--freeze> and C<--no-freeze> options to trigger PostgreSQL COPY FREEZE option.
 Add license information in generated output.
 Add some support to generate CSV.
+Improved MySQL support by Alex Reece (datetime, bigint...).
 Improved documentation and comments.
 
 =item B<version 2.0.0 (r792 on 2014-03-23)>
@@ -2234,9 +2236,6 @@ UNITS = [
     ("timestamp",
      ["-timestamp start='2013-12-26 17:31:05' size=7 prec=10",
       "-timestamp end='2013-12-26 17:32:01' prec=3600 size=3" ]),
-    ("datetime",
-     ["-timestamp start='2013-12-26 17:31:05' size=7 prec=10",
-      "-timestamp end='2013-12-26 17:32:01' prec=3600 size=3" ]),
     ("interval",
      ["-interval", "-interval unit=d size=365", "-interval unit=y size=42"]),
     ("inet",
@@ -2391,8 +2390,8 @@ RE_CMD=r'CREATE|ALTER|DROP|SELECT|INSERT|UPDATE|DELETE|SET|GRANT|REVOKE|SHOW'
 # types
 RE_SER=r'(SMALL|BIG)?SERIAL|SERIAL[248]'
 RE_BLO=r'BYTEA|BLOB'
-RE_INT=r'{0}|(BIG|TINY|SMALL|MEDIUM)INT|INT[248]|INTEGER|INT\b'.format(RE_SER)
-RE_FLT=r'REAL|FLOAT|DOUBLE|REAL|DOUBLE\s+PRECISION|NUMERIC|DECIMAL'
+RE_INT=r'%s|(BIG|TINY|SMALL|MEDIUM)INT|INT[248]|INTEGER|INT\b' % RE_SER
+RE_FLT=r'REAL|FLOAT|DOUBLE\s+PRECISION|NUMERIC|DECIMAL'
 RE_TXT=r'TEXT|CHAR\(\d+\)|VARCHAR\(\d+\)'
 RE_BIT=r'BIT\(\d+\)|VARBIT\(\d+\)'
 RE_TSTZ=r'TIMESTAMP(\s+WITH\s+TIME\s+ZONE)?'
@@ -2415,74 +2414,75 @@ RE_ARRAY=r'((\s+ARRAY)?(\s*\[[][0-9 ]*\])?)?'
 RE_ALLT = r'({0}){1}'.format(RE_TYPE, RE_ARRAY)
 
 # SQL syntax
-new_object = re.compile(r"^\s*({0})\s".format(RE_CMD), re.I)
+new_object = re.compile(r"^\s*(%s)\s" % RE_CMD, re.I).match
 # 1=table name, [2, 3]
 create_table = \
-    re.compile(r'^\s*CREATE\s+TABLE\s*({0})\s*\('.format(RE_IDENT2), re.I)
+    re.compile(r'^\s*CREATE\s+TABLE\s*(%s)\s*\(' % RE_IDENT2, re.I).match
 # 1=type name, [2, 3]
 create_enum = \
-    re.compile(r'^\s*CREATE\s+TYPE\s+({0})\s+AS\s+ENUM'.format(RE_IDENT2), re.I)
+    re.compile(r'^\s*CREATE\s+TYPE\s+(%s)\s+AS\s+ENUM' % RE_IDENT2,
+               re.I).match
 # 1=type
 create_type = \
-    re.compile(r'\s*CREATE\s+TYPE\s+({0})\s+AS'.format(RE_IDENT2), re.I)
+    re.compile(r'\s*CREATE\s+TYPE\s+({0})\s+AS'.format(RE_IDENT2), re.I).match
 
 # 1=?, 2=column, 3=type
-r_column = r'^\s*,?\s*(ADD\s+COLUMN\s+)?({0})\s+({1})'.format(RE_IDENT, RE_ALLT)
-column = re.compile(r_column, re.I)
-is_int = re.compile(r'^({0})$'.format(RE_INT), re.I)
-is_ser = re.compile(r'^({0})$'.format(RE_SER), re.I)
+COLUMN = r'^\s*,?\s*(ADD\s+COLUMN\s+)?(%s)\s+(%s)' % (RE_IDENT, RE_ALLT)
+column = re.compile(COLUMN, re.I).match
+is_int = re.compile(r'^(%s)$' % RE_INT, re.I).match
+is_serial = re.compile(r'^(%s)$' % RE_SER, re.I).match
 # enums are added when definitions are encountered
 column_enum = None
 
-s_reference = \
-    r'.*\sREFERENCES\s+({0})\s*(\(({1})\))?'.format(RE_IDENT2, RE_IDENT)
+REFERENCE = r'.*\sREFERENCES\s+(%s)\s*(\((%s)\))?' % (RE_IDENT2, RE_IDENT)
 # 1=table, [2, 3], 4=?, 5=dest columns (?)
-reference = re.compile(s_reference, re.I)
-primary_key = re.compile('.*\sPRIMARY\s+KEY', re.I)
-unique = re.compile(r'.*\sUNIQUE', re.I)
-not_null = re.compile(r'.*\sNOT\s+NULL', re.I)
-s_unicity = r'.*(UNIQUE|PRIMARY\s+KEY)\s*\(([^\)]+)\)'
+reference = re.compile(REFERENCE, re.I).match
+primary_key = re.compile('.*\sPRIMARY\s+KEY', re.I).match
+unique = re.compile(r'.*\sUNIQUE', re.I).match
+not_null = re.compile(r'.*\sNOT\s+NULL', re.I).match
+UNICITY = r'.*(UNIQUE|PRIMARY\s+KEY)\s*\(([^\)]+)\)'
 # 1=unicity type, 2=columns
-unicity = re.compile(s_unicity, re.I)
+unicity = re.compile(UNICITY, re.I).match
 # 1=?, 2=table name, [3, 4]
 alter_table = \
-    re.compile(r'\s*ALTER\s+TABLE\s+(ONLY\s+)?({0})'.format(RE_IDENT2), re.I)
-add_constraint = r',?\s*ADD\s+CONSTRAINT\s+({0})\s+'.format(RE_IDENT)
+    re.compile(r'\s*ALTER\s+TABLE\s+(ONLY\s+)?(%s)' % RE_IDENT2,
+               re.I).match
+ADD_CONSTRAINT = r',?\s*ADD\s+CONSTRAINT\s+(%s)\s+' % RE_IDENT
 # 1=constraint name, 2=unicity type, 3=columns
-add_unique = re.compile(add_constraint + s_unicity, re.I)
+add_unique = re.compile(ADD_CONSTRAINT + UNICITY, re.I).match
 # 1=constraint_name, 2=source columns, 3=table, [4, 5], 6=, 7=dest columns
 add_fk = \
-    re.compile(add_constraint + r'FOREIGN\s+KEY\s*\(([^\)]+)\)' + s_reference,
-               re.I)
+    re.compile(ADD_CONSTRAINT + r'FOREIGN\s+KEY\s*\(([^\)]+)\)' + REFERENCE,
+               re.I).match
 # 1=column
-alter_column = re.compile(r',?\s*ALTER\s+COLUMN\s+({0})'.format(RE_IDENT), re.I)
+alter_column = re.compile(r',?\s*ALTER\s+COLUMN\s+(%s)' % RE_IDENT, re.I).match
 
 # DETECT DATAFILLER DIRECTIVES
 # commented-out directives, say '--- df...' or '---- df...' or '-- -- df...'
-df_junk = re.compile('.*?--.*-\s*df.*')
+df_junk = re.compile('.*?--.*-\s*df.*').match
 # simple directive: 1=contents
-df_dir = re.compile(r'.*--\s*df[^:]*:\s*(.*)')
+df_dir = re.compile(r'.*--\s*df[^:]*:\s*(.*)').match
 # macro definition: 1=name, 2=contents
-df_mac = re.compile(r'.*--\s*df\s+([\w\.]+)\s*:\s*(.*)')
+df_mac = re.compile(r'.*--\s*df\s+([\w\.]+)\s*:\s*(.*)').match
 # explicit table: 2=name
 df_tab = \
     re.compile(r'.*--\s*df[^:]*\s+(t|table)=({0})(\s|:)'. \
-               format(RE_IDENT2), re.I)
+               format(RE_IDENT2), re.I).match
 # explicit attribute: 2=name
 df_att = \
     re.compile(r'.*--\s*df[^:]*\s+(a|att|attribute)=({0})(\s|:)'. \
-               format(RE_IDENT), re.I)
+               format(RE_IDENT), re.I).match
 # string/float/int directives: 1=name 2=value 3=reminder
-df_txt = re.compile(r'(\w+)=\'([^\']*)\'\s+(.*)')
-df_flt = re.compile(r'(\w+)=(-?\d+\.\d*)\s+(.*)')
-df_int = re.compile(r'(\w+)=(-?\d+)\s+(.*)')
-df_str = re.compile(r'(\w+)=(\S*)\s+(.*)')
+df_txt = re.compile(r'(\w+)=\'([^\']*)\'\s+(.*)').match
+df_flt = re.compile(r'(\w+)=(-?\d+\.\d*)\s+(.*)').match
+df_int = re.compile(r'(\w+)=(-?\d+)\s+(.*)').match
+df_str = re.compile(r'(\w+)=(\S*)\s+(.*)').match
 # simple directive: 1=name 2=reminder
-df_bol = re.compile(r'(\w+)\s+(.*)')
+df_bol = re.compile(r'(\w+)\s+(.*)').match
 
 # remove SQL comments & \xxx commands
-comments = re.compile(r'(.*?)\s*--.*')
-backslash = re.compile(r'\s*\\')
+comments = re.compile(r'(.*?)\s*--.*').match
+backslash = re.compile(r'\s*\\').match
 
 import random
 
@@ -2500,7 +2500,7 @@ def unescape(s, regexp=False):
         c = s[i]
         if c == '\\':
             assert i+1 < len(s), \
-                "escaped string '{0}' must not end with '\\'".format(s)
+                "escaped string '%s' must not end with '\\'" % s
             if re.match(r'[012][0-7]{2}', s[i+1:]): # octal
                 r += chr(int(s[i+1:i+4], 8))
                 i += 4
@@ -2567,7 +2567,7 @@ class Generator(object):
                     None
         # null probability
         self.nullp = 0.0
-        if self.att == None: # for tests
+        if self.att is None: # for tests
             self.nullp = \
                 self.params.get('null', opts.null if opts.null else 0.0)
         elif self.att.isNullable():
@@ -2631,7 +2631,7 @@ class WithLength(Generator):
         lv = 'length' in self.params or 'lenvar' in self.params
         assert not (mm and lv), \
             "{0}: not both 'length'/'lenvar' & 'lenmin'/'lenmax'".format(self)
-        if self.type != None and not mm and not 'length' in self.params:
+        if self.type is not None and not mm and not 'length' in self.params:
             # try length/var based on type
             clen = re.match(r'(var)?(char|bit)\((\d+)\)', self.type)
             self.lenmin, self.lenmax = None, None
@@ -2657,11 +2657,11 @@ class WithLength(Generator):
             length = self.params.get('length', int((lenmin+lenmax)/2))
             lenvar = self.params.get('lenvar', 0)
             self.lenmin, self.lenmax = length-lenvar, length+lenvar
-        if self.lenmin != None and self.lenmax == None:
+        if self.lenmin is not None and self.lenmax is None:
             self.lenmax = int(self.lenmin * 4 / 3)
-        elif self.lenmax != None and self.lenmin == None:
+        elif self.lenmax is not None and self.lenmin is None:
             self.lenmin = int(self.lenmax * 3 / 4)
-        elif self.lenmin == None and self.lenmax == None:
+        elif self.lenmin is None and self.lenmax is None:
             self.lenmin, self.lenmax = lenmin, lenmax
         assert 0 <= self.lenmin and self.lenmin <= self.lenmax, \
             "{0}: inconsistent length [{1},{2}]". \
@@ -2725,7 +2725,7 @@ class ConstGenerator(RandomGenerator):
     DIRS = { 'const':str }
     def __init__(self, att=None, params=None, cst=None, escape=True):
         RandomGenerator.__init__(self, att, params)
-        if cst == None:
+        if cst is None:
             cst = self.params['const'] if 'const' in self.params else ''
         if isinstance(cst, bool): # fix if empty directive
             cst = ''
@@ -2840,7 +2840,8 @@ class IntGenerator(RandomGenerator):
         # set generator subtype depending on attribute
         self.sub = self.params.get('sub')
         if not self.sub:
-            self.sub = 'serial' if att != None and att.isUnique() else 'uniform'
+            self.sub = 'serial' if att is not None and att.isUnique() else \
+					   'uniform'
         # {'x','y'} does not work with 2.6
         assert self.sub in ['serial', 'serand', 'uniform', 'power', 'scale'], \
             "{0}: invalid int generator '{1}'".format(self, self.sub)
@@ -2849,9 +2850,9 @@ class IntGenerator(RandomGenerator):
         if 'offset' in self.params:
             self.offset = self.params['offset']
         # then PK or FK information
-        elif att != None and att.isPK and opts.offset:
+        elif att is not None and att.isPK and opts.offset:
             self.offset = opts.offset
-        elif att != None and att.FK:
+        elif att is not None and att.FK:
             fk = att.FK.getPK()
             self.offset = \
                 fk.params.get('offset', opts.offset if opts.offset else 1)
@@ -2884,7 +2885,7 @@ class IntGenerator(RandomGenerator):
         # set size if explicit, other will have to be set later.
         if 'size' in self.params:
             self.setSize(self.params['size'])
-        elif att != None and att.size != None:
+        elif att is not None and att.size is not None:
             self.setSize(att.size) # possibly computed from table & mult
         else: # later? when??
             self.size = None
@@ -2903,9 +2904,9 @@ class IntGenerator(RandomGenerator):
             sys.stderr.write("{0}: step {1} ignored for size {2}\n".
                              format(self.att, self.step, size))
             self.step = 1
-        if self.xor == None:
+        if self.xor is None:
             self.xor = random.randrange(1, 1000*size) if self.mangle else 0
-        if self.shift == None:
+        if self.shift is None:
             self.shift = random.randrange(0, size) if self.mangle else 0
         if self.xor != 0:
             # note: int.bit_length available from 2.7 & 3.1
@@ -2915,29 +2916,29 @@ class IntGenerator(RandomGenerator):
             self.mask = int(m/2) # ???
         # get generator parameters, which may depend on size
         if self.sub == 'power' or self.sub == 'scale':
-            if self.rate != None:
+            if self.rate is not None:
                 assert 0.0 < self.rate and self.rate < 1.0, \
                     "{0}: rate {1} not in (0,1)".format(self, self.rate)
                 if self.sub == 'power':
                     self.alpha = - math.log(size) / math.log(self.rate)
                 else: # self.sub == 'scale':
                     self.alpha = self.rate * (size - 1.0) / (1.0 - self.rate)
-            elif self.alpha == None:
+            elif self.alpha is None:
                 self.alpha = 1.0
             assert self.alpha > 0, \
                 "{0}: 'alpha' {1:f} not > 0".format(self, self.alpha)
         else: # should not get there
-            assert self.alpha == None, \
+            assert self.alpha is None, \
                 "{0}: useless 'alpha' {1} set".format(self, self.alpha)
     def genData(self):
-        assert self.size != None and self.size > 0, \
+        assert self.size is not None and self.size > 0, \
             "{0}: cannot draw from empty set".format(self)
         # update counter
         self.gens += 1
         # set base in 0..size-1 depending on generator type
         if self.size == 1:
             return self.offset
-        assert self.shift != None, "{0}: shift is set".format(self)
+        assert self.shift is not None, "{0}: shift is set".format(self)
         if self.sub == 'serial' or \
            self.sub == 'serand' and self.gens - 1 < self.size:
             base = (self.gens - 1) % self.size
@@ -2998,7 +2999,7 @@ class DateGenerator(IntGenerator):
         ref = self.params['start'] if start else \
               self.params['end'] if end else \
               None
-        if ref != None:
+        if ref is not None:
             self.ref = DateGenerator.parse(ref)
             self.dir = 2 * ('start' in self.params) - 1
         else:
@@ -3044,7 +3045,7 @@ class TimestampGenerator(IntGenerator):
         ref = self.params['start'] if start else \
               self.params['end'] if end else \
               None
-        if ref != None:
+        if ref is not None:
             self.ref = TimestampGenerator.parse(ref)
             self.dir = 2 * ('start' in self.params) - 1
         else:
@@ -3103,7 +3104,7 @@ class StringGenerator(IntGenerator, WithLength):
         WithLength.__init__(self, 8, 16)
         # set defaults from attributes
         self.prefix = self.params.get('prefix', att.name if att else 'str')
-        if self.size == None:
+        if self.size is None:
             self.setSize(opts.size if opts.size else 1000) # ???
         self.cleanParams(StringGenerator.DIRS)
     def lenData(self, length, n):
@@ -3159,11 +3160,11 @@ class CharsGenerator(WithSubgen, StringGenerator):
         return chars
     def __init__(self, att=None, params=None, chars=None):
         StringGenerator.__init__(self, att, params)
-        if att != None and att.isUnique():
+        if att is not None and att.isUnique():
             raise Exception("chars generator does not support UNIQUE")
         self.chars = \
             CharsGenerator.parseCharSequence(self, self.params['chars']) \
-                if chars == None else chars
+                if chars is None else chars
         assert len(self.chars) > 0, \
             "{0}: no characters to draw from".format(self)
         WithSubgen.__init__(self, 'cgen', None, self.params, backup=True)
@@ -3200,7 +3201,7 @@ class LuhnGenerator(SeedGenerator):
         self.length = self.params.get('length', 16)
         assert self.length >= 2, \
             "{0}: 'length' {1} must be > 1".format(self, self.length)
-        if self.size == None:
+        if self.size is None:
             self.setSize(opts.size if opts.size else 100)
         self.prefix = str(self.params.get('prefix', ''))
         assert len(self.prefix) < self.length, \
@@ -3316,7 +3317,7 @@ class WordGenerator(IntGenerator):
                 format(self, self.size, len(self.words))
         self.cleanParams(WordGenerator.DIRS)
     def setSize(self, size):
-        if self.words == None:
+        if self.words is None:
             #  hack: too early!
             return
         IntGenerator.setSize(self, size)
@@ -3433,7 +3434,7 @@ class FileGenerator(IntGenerator):
                     lambda s: s.decode(opts.encoding)
         # set size & offset
         assert len(self.files) > 0, "{0}: non empty set of files".format(self)
-        if self.size == None:
+        if self.size is None:
             self.setSize(len(self.files))
         if self.size > len(self.files):
             self.size = len(self.files)
@@ -3502,7 +3503,7 @@ class InetGenerator(IntGenerator):
             self.net = n & (0xffffffff ^ self.mask)
         # override size & offset if was not set explicitely
         size = self.mask - 1 + int(beg) + int(end)
-        if self.size == None:
+        if self.size is None:
             assert size > 0, \
                 "{0}: empty address range {1}".format(self, self.network)
             self.setSize(size)
@@ -3610,7 +3611,7 @@ class AltGenerator(RandomGenerator):
     DIRS = { 'alt':str }
     def __init__(self, att=None, params=None, gens=None):
         RandomGenerator.__init__(self, att, params)
-        if gens != None:
+        if gens is not None:
             assert not params
             self.alts = gens
             self.total_weight = len(gens)
@@ -3634,7 +3635,7 @@ class AltGenerator(RandomGenerator):
                 self.alts.append(gen)
                 self.weight.append(w)
                 self.total_weight += w
-                if isinstance(gen, IntGenerator) and gen.size == None: # ???
+                if isinstance(gen, IntGenerator) and gen.size is None: # ???
                     gen.setSize(opts.size)
         self.cleanParams(AltGenerator.DIRS)
     def mapGen(self, func):
@@ -3952,7 +3953,7 @@ class SharedGenerator(WithPersistent, IntGenerator):
                 SharedGenerator(name, df_macro[name])
         return SharedGenerator._generators[name]
     def __init__(self, name, params):
-        assert name != None and params != None, "mandatory parameters"
+        assert name is not None and params is not None, "mandatory parameters"
         size = params['size'] if 'size' in params else None
         mult = params['mult'] if 'mult' in params else None
         IntGenerator.__init__(self, None, params)
@@ -3964,7 +3965,7 @@ class SharedGenerator(WithPersistent, IntGenerator):
             self.setSize(mult * opts.size)
         elif opts.size:
             self.setSize(opts.size)
-        assert self.size != None, \
+        assert self.size is not None, \
             "{0}: size not set in macro {1}".format(self, name)
         # persistent
         WithPersistent.__init__(self)
@@ -3988,7 +3989,7 @@ def UUIDGenerator(att, params=None):
 
 # all user-visible generators
 GENERATORS = {
-    'cat':CatGenerator, 'alt':AltGenerator, 'datetime':TimestampGenerator, 'timestamp':TimestampGenerator,
+    'cat':CatGenerator, 'alt':AltGenerator, 'timestamp':TimestampGenerator,
     'repeat':RepeatGenerator, 'float':FloatGenerator, 'date':DateGenerator,
     'pattern':PatternGenerator, 'int':IntGenerator, 'bool':BoolGenerator,
     'interval':IntervalGenerator, 'const':ConstGenerator, 'word':WordGenerator,
@@ -4011,7 +4012,7 @@ def createGenerator(a, t, params=None, msg=None):
     - str t: name of generator, may be None
     - {} p: additional parameters, may be None
     """
-    if params == None: params = a.params
+    if params is None: params = a.params
     if not t:
         t = findGenerator(msg, params)
     if not t and 'type' in params:
@@ -4031,7 +4032,7 @@ def macroGenerator(name, att=None):
     assert name in df_macro, \
         "{0}: '{1}' must be a macro".format(att if att else 'Macro', name)
     gen = createGenerator(att, None, params=df_macro[name], msg=name)
-    if isinstance(gen, IntGenerator) and gen.size == None: # ???
+    if isinstance(gen, IntGenerator) and gen.size is None: # ???
         gen.setSize(opts.size if opts.size else 1000) # ???
     return gen
 
@@ -4051,22 +4052,22 @@ def getParams(dfline):
     # do parse
     while len(dfline)>0:
         # python does not like combining assign & test, so use continue
-        d = df_txt.match(dfline)
+        d = df_txt(dfline)
         if d:
             params[d.group(1)] = str(d.group(2))
             dfline = d.group(3)
             continue
-        d = df_flt.match(dfline)
+        d = df_flt(dfline)
         if d:
             params[d.group(1)] = float(d.group(2))
             dfline = d.group(3)
             continue
-        d = df_int.match(dfline)
+        d = df_int(dfline)
         if d:
             params[d.group(1)] = int(d.group(2))
             dfline = d.group(3)
             continue
-        d = df_str.match(dfline)
+        d = df_str(dfline)
         if d:
             # handle use of a macro directly
             if d.group(1) == 'use':
@@ -4077,7 +4078,7 @@ def getParams(dfline):
                 params[d.group(1)] = d.group(2)
             dfline = d.group(3)
             continue
-        d = df_bol.match(dfline)
+        d = df_bol(dfline)
         if d:
             params[d.group(1)] = True
             dfline = d.group(2)
@@ -4157,7 +4158,6 @@ def findGeneratorType(type):
         'string'    if db.textType(type)      else \
         'bool'      if db.boolType(type)      else \
         'date'      if db.dateType(type)      else \
-        'datetime'  if db.timestampType(type) else \
         'timestamp' if db.timestampType(type) else \
         'interval'  if db.intervalType(type)  else \
         'float'     if db.floatType(type)     else \
@@ -4265,7 +4265,7 @@ class Table(Model):
         assert len(atts) >= 1
         if len(atts) == 1:
             att = self.getAttribute(atts[0])
-            if type != None and type.lower() == 'unique':
+            if type is not None and type.lower() == 'unique':
                 att.unique = True
             else:
                 att.isPK = True
@@ -4359,7 +4359,7 @@ class Database(object):
         raise Exception('not implemented in abstract class')
     def insertEnd(self):
         raise Exception('not implemented in abstract class')
-    def setSequence(self, att, number):
+    def setSequence(self, tab, att, number):
         raise Exception('not implemented in abstract class')
     def dropTable(self, table):
         return "DROP TABLE {0};".format(self.quote_ident(table.name))
@@ -4444,7 +4444,8 @@ class CSV(Database):
             (table.getName(), ','.join(a.getName() \
                 for a in filter(lambda x: x.gen, table.att_list))))
     def insertValue(self, table, value, isLast):
-        return ','.join(db.quoteLiteral(i) for i in value)
+        return ','.join(db.null() if i is None else db.quoteLiteral(i) \
+                        for i in value)
     def insertEnd(self):
         return ''
     def setSequence(self, tab, att, number):
@@ -4457,17 +4458,19 @@ class CSV(Database):
     def quoteIdent(self, ident):
         return '"%s"' % ident
     def quoteLiteral(self, literal):
-        if isinstance(literal, (int, float)):
+        if literal is None:
+            return self.null()
+        elif isinstance(literal, (int, float)):
             return str(literal)
-        else:
+        else: # should do some escaping?
             return '"%s"' % literal
     # type
     def serialType(self, type):
-        return is_ser.match(type)
+        return is_serial(type)
     def intType(self, type):
         t = type.lower()
         return Database.intType(self, t) or \
-            self.serialType(type) or is_int.match(t)
+            self.serialType(type) or is_int(t)
     # values
     def null(self):
         return 'NULL'
@@ -4495,7 +4498,7 @@ class PostgreSQL(Database):
                      for a in filter(lambda x: x.gen, table.att_list)),
             scopyopts)
     def quoteEsc(self, s, q, esc, n):
-        if s == None:
+        if s is None:
             return n
         elif isinstance(s, list): # ',' is for all types but Box...
             return '{' + ','.join(self.dQuoteEsc(i) for i in s) + '}'
@@ -4544,11 +4547,11 @@ class PostgreSQL(Database):
     def null(self):
         return r'\N'
     def serialType(self, type):
-        return is_ser.match(type)
+        return is_serial(type)
     def intType(self, type):
         t = type.lower()
         return Database.intType(self, t) or \
-            self.serialType(type) or is_int.match(t)
+            self.serialType(type) or is_int(t)
     def eanType(self, type):
         # return the expected byte size
         t = type.upper()
@@ -4577,9 +4580,9 @@ class MySQL(Database):
         qv = []
         for v in value:
             qv.append(self.null() if v is None else
-                      self.boolValue(v) if type(v) is bool else
-                      self.quoteLiteral(v) if type(v) is defaultstr else
-                      self.quoteLiteral(v) if type(v) is str else str(v))
+					  self.boolValue(v) if type(v) is bool else
+                      self.quoteLiteral(v) if type(v) in [str, defstr] else
+					  str(v))
         s = '  (' + ','.join(str(v) for v in qv) + ')'
         if not isLast:
             s += ','
@@ -4589,11 +4592,14 @@ class MySQL(Database):
     def null(self):
         return 'NULL'
     def serialType(self, type):
-        return is_ser.match(type)
+        return is_serial(type)
     def intType(self, type):
         t = type.lower()
-        return Database.intType(self, t) or \
-            self.serialType(type) or is_int.match(t)
+        return Database.intType(self, t) or self.serialType(t) or is_int(t)
+    def timestampType(self, type):
+        return type.lower() == 'datetime' or re.match(RE_TSTZ + '$', type, re.I)
+    def setSequence(self, tab, att, number):
+        return ''
 
 # class SQLite(Database):
 
@@ -4758,7 +4764,7 @@ if opts.test:
         assert g, "must specify a generator: {0}".format(t)
         Model.checkPARAMS('--test', params, Attribute.PARAMS)
         gen = createGenerator(None, g, params)
-        if isinstance(gen, IntGenerator) and gen.size == None:
+        if isinstance(gen, IntGenerator) and gen.size is None:
             gen.setSize(opts.size if opts.size else 10)
         assert not gen.params, "unused parameter: {0}".format(gen.params)
         if h == '!': # show histogram
@@ -4883,16 +4889,16 @@ all_enums = {}
 re_enums = ''
 
 # custom types management
-re_types = ''
+TYPES = None
 column_type = None
 def addType(t):
-    global re_types, column_type
-    if re_types:
-        re_types += '|' + t
+    global TYPES, column_type
+    if TYPES is None:
+        TYPES = t
     else:
-        re_types = t
-    column_type = re.compile(r'^\s*,?\s*(ADD\s+COLUMN\s+)?({0})\s+({1}{2})'. \
-                             format(RE_IDENT, re_types, RE_ARRAY), re.I)
+        TYPES += '|' + t
+    column_type = re.compile(r'^\s*,?\s*(ADD\s+COLUMN\s+)?(%s)\s+(%s%s)' \
+                             % (RE_IDENT, TYPES, RE_ARRAY), re.I).match
 
 for t in opts.type:
     addType(t)
@@ -4928,44 +4934,44 @@ else:
 # SCHEMA PARSER
 #
 
-re_quoted = re.compile(r"[^']*'(([^']|'')*)'(.*)")
+re_quoted = re.compile(r"[^']*'(([^']|'')*)'(.*)").match
 def sql_string_list(line):
     """Return an unquoted list of sql strings."""
     sl = []
-    quoted = re_quoted.match(line)
+    quoted = re_quoted(line)
     while quoted:
         sl.append(quoted.group(1))
         line = quoted.group(3)
-        quoted = re_quoted.match(line)
+        quoted = re_quoted(line)
     return sl
 
 for line in lines:
     #if opts.debug: sys.stderr.write(u8("line={0}").format(line))
     # skip \commands
-    if backslash.match(line):
+    if backslash(line):
         continue
     # skip commented out directives
-    if df_junk.match(line):
+    if df_junk(line):
         continue
     # get datafiller stuff
     # directives with explicit table & attribute
-    d = df_tab.match(line)
+    d = df_tab(line)
     if d:
         if opts.debug: debug(2, "explicit TA directive")
         current_table = all_tables[d.group(2).lower()]
         current_attribute = None
-    d = df_att.match(line)
+    d = df_att(line)
     if d:
         if opts.debug: debug(2, "set attribute")
         assert current_table!=None
         current_attribute = current_table.getAttribute(d.group(2))
     # extract directive
-    d = df_dir.match(line)
+    d = df_dir(line)
     if d:
         if opts.debug: debug(2, "is a directive")
         dfstuff = d.group(1)
     # get datafiller macro definition
-    d = df_mac.match(line)
+    d = df_mac(line)
     if d:
         if opts.debug: debug(2, "is a macro")
         mname = d.group(1)
@@ -4978,13 +4984,13 @@ for line in lines:
         # reset current params so that it is not stored in an object
         dfstuff = None
     # cleanup comments
-    c = comments.match(line)
+    c = comments(line)
     if c:
         if opts.debug: debug(2, "cleanup comment")
         line = c.group(1)
     # reset current object
     # argh, beware of ALTER TABLE ... ALTER COLUMN!
-    if new_object.match(line) and not alter_column.match(line):
+    if new_object(line) and not alter_column(line):
         current_table = None
         current_attribute = None
         current_enum = None
@@ -4992,7 +4998,7 @@ for line in lines:
     #
     # CREATE TYPE ... AS ENUM
     #
-    is_ce = create_enum.match(line)
+    is_ce = create_enum(line)
     if is_ce:
         current_enum = is_ce.group(1) # lower()?
         if opts.debug:
@@ -5012,20 +5018,20 @@ for line in lines:
     #
     # CREATE TYPE ... AS
     #
-    is_ty = create_type.match(line)
+    is_ty = create_type(line)
     if is_ty:
         addType(is_ty.group(1))
         continue
     #
     # ALTER/CREATE TABLE
     #
-    is_at = alter_table.match(line)
+    is_at = alter_table(line)
     if is_at:
         name = is_at.group(2)
         if opts.debug: debug(2, "alter table " + name)
         current_table = all_tables[name.lower()]
         att_number = len(current_table.atts)
-    is_ct = create_table.match(line)
+    is_ct = create_table(line)
     if is_ct:
         name = is_ct.group(1)
         if opts.debug: debug(2, "create table " + name)
@@ -5038,60 +5044,60 @@ for line in lines:
         #
         is_enum = False
         # try standard types
-        c = column.match(line)
+        c = column(line)
         # try enums
         if not c and column_enum:
             c = column_enum.match(line)
             is_enum = bool(c)
         # try other types
         if not c and column_type:
-            c = column_type.match(line)
+            c = column_type(line)
         if c:
             if opts.debug: debug(2, "column " + c.group(2))
             att_number += 1
             current_attribute = Attribute(c.group(2), att_number, c.group(3))
             current_attribute.is_enum = is_enum
-            if primary_key.match(line):
+            if primary_key(line):
                 if opts.debug: debug(2, "primary key")
                 current_attribute.isPK = True
-            if unique.match(line):
+            if unique(line):
                 if opts.debug: debug(2, "unique")
                 current_attribute.unique = True
-            if not_null.match(line):
+            if not_null(line):
                 if opts.debug: debug(2, "not null")
                 current_attribute.not_null = True
             current_table.addAttribute(current_attribute)
-            r = reference.match(line)
+            r = reference(line)
             if r:
                 if opts.debug: debug(2, "reference")
                 target = r.group(1)
                 current_attribute.FK = all_tables[target.lower()]
                 current_attribute.FKatt = r.group(5) if r.group(4) else None
         # ADD UNIQUE
-        q = add_unique.match(line)
+        q = add_unique(line)
         if q:
             if opts.debug: debug(2, "add unique")
             current_table.addUnique(re.split(r'[\s,]+', q.group(3)), q.group(2))
         else:
             # UNIQUE()
-            q = unicity.match(line)
+            q = unicity(line)
             if q:
                 if opts.debug: debug(2, "unicity")
                 current_table.addUnique(re.split(r'[\s,]+', q.group(2)), \
                                         q.group(1))
-        r = add_fk.match(line)
+        r = add_fk(line)
         if r:
             if opts.debug: debug(2, "add foreign key")
             src, target = r.group(2, 3)
             current_attribute = current_table.getAttribute(src)
             current_attribute.FK = all_tables[target.lower()]
             current_attribute.FKatt = r.group(7) if r.group(6) else None
-        c = alter_column.match(line)
+        c = alter_column(line)
         if c:
             if opts.debug: debug(2, "alter column " + c.group(1))
             current_attribute = current_table.getAttribute(c.group(1))
             # ... SET NOT NULL
-            if not_null.match(line):
+            if not_null(line):
                 if opts.debug: debug(2, "set not null")
                 current_attribute.not_null = True
     # attribute df stuff to current object: schema, table or attribute
@@ -5108,7 +5114,7 @@ for line in lines:
 #
 # SET DEFAULT VALUES for some options, possibly from directives
 #
-if opts.size == None:
+if opts.size is None:
     opts.size = schema.params.get('size', 100)
 
 if not opts.offset:
@@ -5186,7 +5192,7 @@ if opts.truncate:
 for t in tables:
     t.skip = t.params.pop('skip') if 'skip' in t.params else 0.0
     assert t.skip >= 0.0 and t.skip <= 1.0
-    if t.size == None:
+    if t.size is None:
         t.size = t.params.pop('size') if 'size' in t.params else \
                  int(t.params.pop('mult')*opts.size) if 'mult' in t.params else\
                  opts.size
@@ -5194,7 +5200,7 @@ for t in tables:
 # *then* set att sizes and possible offset
 for t in tables:
     for a in t.att_list:
-        if a.FK != None:
+        if a.FK is not None:
             a.size = a.FK.size
             if a.FK.skip:
                 raise Exception("reference on table {0} with skipped tuples".
@@ -5216,7 +5222,7 @@ for t in tables:
         elif 'size' in a.params:
             # the directive is not removed now, it should be done later?
             a.size = a.params['size']
-        elif a.size == None:
+        elif a.size is None:
             a.size = int(t.size * a.params.pop('mult', 1.0))
 
 #
