@@ -4440,14 +4440,14 @@ class CSV(Database):
         return None
     # operations
     def insertBegin(self, table):
-        return self._comment("%s: %s" % \
+        print(self._comment("%s: %s" % \
             (table.getName(), ','.join(a.getName() \
-                for a in filter(lambda x: x.gen, table.att_list))))
+                for a in filter(lambda x: x.gen, table.att_list)))))
     def insertValue(self, table, value, isLast):
         return ','.join(db.null() if i is None else db.quoteLiteral(i) \
                         for i in value)
     def insertEnd(self):
-        return ''
+        pass
     def setSequence(self, tab, att, number):
         return ''
     def dropTable(self, table):
@@ -4492,11 +4492,11 @@ class PostgreSQL(Database):
             copyopts.append("FREEZE ON")
         scopyopts = (" (" + ", ".join(copyopts) + ")") if len(copyopts) else ''
         # build copy statement
-        return "COPY {0} ({1}) FROM STDIN{2};".format(
+        print("COPY {0} ({1}) FROM STDIN{2};".format(
             table.getName(),
             ','.join(a.getName() \
                      for a in filter(lambda x: x.gen, table.att_list)),
-            scopyopts)
+            scopyopts))
     def quoteEsc(self, s, q, esc, n):
         if s is None:
             return n
@@ -4531,7 +4531,7 @@ class PostgreSQL(Database):
         # generate tab-separated possibly escaped values
         return '\t'.join(self.copyEsc(i) for i in value)
     def insertEnd(self):
-        return '\\.'
+        print('\\.')
     def setSequence(self, tab, att, number):
         name = "{0}_{1}_seq".format(tab.name, att.name)
         if tab.quoted or att.quoted:
@@ -4574,8 +4574,8 @@ class MySQL(Database):
     def commit(self):
         return 'COMMIT;'
     def insertBegin(self, table):
-        return "INSERT INTO {0} ({1}) VALUES".format(table.getName(),
-                        ','.join(a.getName() for a in table.att_list))
+        print("INSERT INTO {0} ({1}) VALUES".format(table.getName(),
+                        ','.join(a.getName() for a in table.att_list)))
     def insertValue(self, table, value, isLast):
         qv = []
         for v in value:
@@ -4588,7 +4588,7 @@ class MySQL(Database):
             s += ','
         return s
     def insertEnd(self):
-        return ';'
+        print(';')
     def null(self):
         return 'NULL'
     def serialType(self, type):
@@ -5284,13 +5284,13 @@ for t in tables:
         db.comment("fill table {0} ({1})".format(t.name, size))
         if not opts.quiet:
             print(db.echo("# filling table {0} ({1})".format(t.name, size)))
-        print(db.insertBegin(t))
+        db.insertBegin(t)
         for i in range(t.size):
             tup = t.getData()
             # although the tuple is generated, it may yet not be inserted
             if not t.skip or not random.random() < t.skip or i==t.size-1:
                 print(db.insertValue(t, tup, i==t.size-1))
-        print(db.insertEnd())
+        db.insertEnd()
 
 #
 # CLEANUP
