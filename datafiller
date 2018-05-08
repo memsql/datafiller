@@ -4559,8 +4559,12 @@ class PostgreSQL(Database):
 
 class MySQL(Database):
     """MySQL database (experimental)."""
+    def _comment(self, s):
+        return "-- " + s
     def begin(self):
         return 'START TRANSACTION;'
+    def echo(self, s):
+        return self._comment(s)
     def commit(self):
         return 'COMMIT;'
     def insertBegin(self, table):
